@@ -1,0 +1,237 @@
+name: Deploy
+
+# GitHub Actions orchestrates; the work runs on the self-hosted runners installed on
+# the deployment host (label: nascon). That runner is the production machine, so the
+# pipeline builds the images locally and restarts the stack in place — no registry
+# round trip, no SSH, and docker layer caching between deploys.
+#
+# Why self-hosted: this account is refused GitHub-hosted runners. Every job — even one
+# whose only step is `uname -a` — is aborted with runner_id 0 and no steps. Self-hosted
+# runners are unaffected.
+#
+# The concurrency group keeps deploys strictly one at a time even with several
+# runners, because two `docker compose up -d` runs would fight each other.
+#
+# Application secrets live only in /opt/nascon/.env on the host.
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - '**/*.md'
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+env:
+  APP_ENV_FILE: /opt/nascon/.env
+  DOMAIN: nascon.artdevelopers.site
+
+jobs:
+  deploy:
+    name: Build and roll out
+    runs-on: [self-hosted, nascon]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check the production configuration
+        run: |
+          set -euo pipefail
+          if [ ! -f "$APP_ENV_FILE" ]; then
+            echo "::error::$APP_ENV_FILE is missing. Copy deploy/.env.example there and fill it in."
+            exit 1
+          fi
+          echo "using $APP_ENV_FILE"
+          grep -cE '^[A-Z]' "$APP_ENV_FILE" | xargs -I{} echo "  {} variables set"
+          bash deploy/scripts/announce.sh preparing
+
+      - name: Announce the deployment on the site
+        run: bash deploy/scripts/announce.sh announced
+
+      - name: Build the images
+        run: |
+          set -euo pipefail
+          bash deploy/scripts/announce.sh building
+          # Tagged with the commit so a rollback is just a different tag.
+          export IMAGE_TAG="${GITHUB_SHA::12}"
+          echo "IMAGE_TAG=$IMAGE_TAG" >>"$GITHUB_ENV"
+          docker compose --env-file "$APP_ENV_FILE" build
+
+      - name: Unit tests (against the built images)
+        run: |
+          set -euo pipefail
+
+          IMAGES=$(docker compose --env-file "$APP_ENV_FILE" config --images)
+          BACKEND_IMAGE=$(printf '%s\n' "$IMAGES" | grep -E 'nascon-backend:' | head -1)
+          AI_IMAGE=$(printf '%s\n' "$IMAGES" | grep -E 'nascon-ai:' | head -1)
+
+          if [ -z "$BACKEND_IMAGE" ] || [ -z "$AI_IMAGE" ]; then
+            echo "::error::could not resolve the image names from compose"
+            exit 1
+          fi
+
+          echo "== backend =="
+          docker run --rm \
+            -e NODE_ENV=test \
+            -e JWT_SECRET=unit-tests-only-secret \
+            --entrypoint node "$BACKEND_IMAGE" --test test/payments.test.js test/auth.test.js
+
+          echo
+          echo "== ai =="
+          docker run --rm --entrypoint python "$AI_IMAGE" -m unittest discover -s tests -v
+
+          echo
+          echo "unit tests passed — rolling out"
+
+      - name: Roll the stack
+        run: |
+          set -euo pipefail
+          bash deploy/scripts/announce.sh rolling
+          docker compose --env-file "$APP_ENV_FILE" up -d --remove-orphans
+          docker compose --env-file "$APP_ENV_FILE" ps
+          docker image prune -f --filter "until=168h" >/dev/null 2>&1 || true
+
+      - name: Wait for every container to be healthy
+        run: |
+          set -eo pipefail
+          fail() { echo "::error::$1"; exit 1; }
+
+          # The page shows one row per container, so every round reports what docker
+          # says right now rather than just a count.
+          snapshot() { bash deploy/scripts/snapshot-containers.sh /tmp/nascon-containers.json; }
+
+          snapshot
+          bash deploy/scripts/announce.sh health "starting the stack" /tmp/nascon-containers.json
+
+          pending=0
+
+          for attempt in $(seq 1 60); do
+            pending=0
+
+            for id in $(docker compose --env-file "$APP_ENV_FILE" ps -q); do
+              # State and health in one read. A container with no healthcheck (the
+              # exporters, for instance) only has to be running; one that does have a
+              # healthcheck has to be healthy.
+              info=$(docker inspect -f '{{.State.Status}}|{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$id" 2>/dev/null || echo 'unknown|unknown')
+              state=${info%%|*}
+              health=${info##*|}
+
+              if [ "$state" != "running" ]; then
+                pending=$((pending + 1))
+              elif [ "$health" != "none" ] && [ "$health" != "healthy" ]; then
+                pending=$((pending + 1))
+              fi
+            done
+
+            snapshot
+            bash deploy/scripts/announce.sh health "$pending service(s) still starting" /tmp/nascon-containers.json
+
+            if [ "$pending" = "0" ]; then
+              echo "all containers healthy after $((attempt * 5))s"
+              break
+            fi
+
+            echo "  attempt $attempt: $pending container(s) still starting"
+            sleep 5
+          done
+
+          [ "$pending" = "0" ] || fail "$pending container(s) never became healthy"
+          docker compose --env-file "$APP_ENV_FILE" ps --format 'table {{.Name}}\t{{.Status}}'
+
+      - name: Verify through the public domain
+        run: |
+          set -euo pipefail
+          fail() { echo "::error::$1"; exit 1; }
+
+          bash deploy/scripts/announce.sh verifying
+
+          for attempt in $(seq 1 24); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 "https://$DOMAIN/api/health" || true)
+            [ "$code" = "200" ] && break
+            echo "  attempt $attempt: /api/health -> $code"
+            [ "$attempt" = "24" ] && fail "the API never answered on $DOMAIN"
+            sleep 5
+          done
+
+          echo "== SPA =="
+          curl -fsS --max-time 20 "https://$DOMAIN/" | grep -q 'id="root"' \
+            || fail "the SPA shell was not served"
+
+          echo "== API =="
+          curl -fsS --max-time 20 "https://$DOMAIN/api/health" | tee /tmp/nascon-api.json
+          grep -q '"status":"ok"' /tmp/nascon-api.json || fail "the API is not healthy"
+
+          echo
+          echo "== voice and the audio queue =="
+          voice_ok=0
+
+          for attempt in $(seq 1 20); do
+            if curl -fsS --max-time 30 "https://$DOMAIN/voice/health" >/tmp/nascon-voice.json 2>/dev/null; then
+              voice_ok=1
+              break
+            fi
+            echo "  attempt $attempt: /voice/health not ready"
+            sleep 5
+          done
+
+          [ "$voice_ok" = "1" ] || fail "/voice/health never answered on $DOMAIN"
+
+          python3 - <<'PY'
+          import json, sys
+
+          data = json.load(open("/tmp/nascon-voice.json"))
+          queue = data.get("queue", {})
+
+          print("stt   :", data["stt"]["model"], "configured:", data["stt"]["configured"])
+          print("tts   :", data["tts"]["voice"], "edge_tts:", data["tts"]["edge_tts"])
+          print("queue :", queue.get("queue"), "worker:", queue.get("worker_alive"),
+                "broker:", queue.get("reason"), "spool:", queue.get("spool_files"))
+
+          problems = []
+          if not data["stt"]["configured"]:
+              problems.append("speech-to-text is not configured")
+          if not queue.get("worker_alive"):
+              problems.append("the audio queue worker is not running")
+          if problems:
+              print("::error::" + "; ".join(problems))
+              sys.exit(1)
+          print("voice path healthy")
+          PY
+
+          echo
+          echo "deployed ${GITHUB_SHA}"
+
+      - name: Clear the deployment notice
+        if: always()
+        run: |
+          set -uo pipefail
+
+          # A failed run must never look finished.
+          if [ "${{ job.status }}" != "success" ]; then
+            bash deploy/scripts/announce.sh failed "the run did not finish cleanly"
+          fi
+
+          for attempt in 1 2 3 4 5 6; do
+            if bash deploy/scripts/announce.sh done && \
+              grep -qE '^DEPLOY_STATUS_TOKEN=' "$APP_ENV_FILE"; then
+              exit 0
+            fi
+            echo "  attempt $attempt: could not report yet"
+            sleep 5
+          done
+
+          echo "::warning::could not clear the notice; it expires on its own after 30 minutes"
+
+      - name: What to do when it fails
+        if: failure()
+        run: |
+          bash deploy/scripts/announce.sh failed "the pipeline failed" || true
+          echo "::warning::Investigate on the host:"
+          echo "  cd /opt/nascon && docker compose --env-file .env ps"
+          echo "  cd /opt/nascon && docker compose --env-file .env logs --tail=60"
+          echo "Roll back with:"
+          echo "  cd /opt/nascon && IMAGE_TAG=<previous-tag> docker compose --env-file .env up -d"
+          echo
+          docker compose --env-file "$APP_ENV_FILE" logs --tail=40 || true
