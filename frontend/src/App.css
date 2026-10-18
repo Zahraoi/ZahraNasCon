@@ -2179,3 +2179,38 @@
     display: none;
   }
 }
+
+/* Google Calendar ----------------------------------------------------- */
+
+.cal-facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 1rem;
+}
+
+.cal-form {
+  display: grid;
+  gap: 1rem;
+}
+
+.cal-form__row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 1rem;
+}
+
+.cal-form .textarea {
+  min-height: 90px;
+}
+
+.cal-event-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-weight: 600;
+  color: var(--blue-500);
+}
+
+.cal-event-link:hover {
+  text-decoration: underline;
+}

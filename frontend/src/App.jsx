@@ -9,6 +9,7 @@ import About from './pages/About.jsx';
 import Academics from './pages/Academics.jsx';
 import Admin from './pages/Admin.jsx';
 import Admissions from './pages/Admissions.jsx';
+import Calendar from './pages/Calendar.jsx';
 import Contact from './pages/Contact.jsx';
 import Dashboard from './pages/Dashboard.jsx';
 import Deploy from './pages/Deploy.jsx';
@@ -65,6 +66,7 @@ export default function App() {
           <Route path="voice" element={<Voice />} />
           <Route path="documents" element={<Documents />} />
           <Route path="payments" element={<Payments />} />
+          <Route path="calendar" element={<Calendar />} />
           <Route
             path="admin"
             element={

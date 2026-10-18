@@ -1,5 +1,6 @@
 import {
   AudioLines,
+  CalendarDays,
   ChevronsLeft,
   ChevronsRight,
   Database,
@@ -22,6 +23,7 @@ const PORTAL_LINKS = [
   { to: '/knowledge', label: 'Knowledge', icon: Database },
   { to: '/documents', label: 'Documents', icon: FileText },
   { to: '/payments', label: 'Payments', icon: Wallet },
+  { to: '/calendar', label: 'Calendar', icon: CalendarDays },
 ];
 
 /** Admins land on the console, so Overview would only bounce them there. */
@@ -31,6 +33,7 @@ const ADMIN_PORTAL_LINKS = [
   { to: '/knowledge', label: 'Knowledge', icon: Database },
   { to: '/documents', label: 'Documents', icon: FileText },
   { to: '/payments', label: 'Payments', icon: Wallet },
+  { to: '/calendar', label: 'Calendar', icon: CalendarDays },
 ];
 
 const ADMIN_LINKS = [{ to: '/admin', label: 'Admin console', icon: ShieldCheck }];

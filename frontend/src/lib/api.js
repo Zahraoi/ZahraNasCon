@@ -127,6 +127,13 @@ export const api = {
   whatsappStop: (token) => request('/api/whatsapp/stop', { method: 'POST', token }),
   whatsappSend: (token, to, text) =>
     request('/api/whatsapp/send', { method: 'POST', body: { to, text }, token }),
+
+  calendarStatus: (token) => request('/api/calendar/status', { token }),
+  calendarConnect: (token) => request('/api/calendar/connect', { method: 'POST', token }),
+  calendarDisconnect: (token) => request('/api/calendar/disconnect', { method: 'POST', token }),
+  calendarEvents: (token, days = 30) => request(`/api/calendar/events?days=${days}`, { token }),
+  calendarCreateEvent: (token, details) =>
+    request('/api/calendar/events', { method: 'POST', body: details, token }),
 };
 
 /** Which STT model, TTS engine and VAD settings the Python service is using. */

@@ -76,7 +76,7 @@ jobs:
           docker run --rm \
             -e NODE_ENV=test \
             -e JWT_SECRET=unit-tests-only-secret \
-            --entrypoint node "$BACKEND_IMAGE" --test test/payments.test.js test/auth.test.js
+            --entrypoint node "$BACKEND_IMAGE" --test test/payments.test.js test/auth.test.js test/calendar.test.js
 
           echo
           echo "== ai =="

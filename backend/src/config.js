@@ -84,6 +84,20 @@ export const config = {
     replyToGroups: toBool(process.env.WHATSAPP_REPLY_TO_GROUPS, false),
     allowUnknown: toBool(process.env.WHATSAPP_ALLOW_UNKNOWN, true),
   },
+  google: {
+    clientId: process.env.GOOGLE_CLIENT_ID ?? '',
+    clientSecret: process.env.GOOGLE_CLIENT_SECRET ?? '',
+    redirectUri:
+      process.env.GOOGLE_REDIRECT_URI ??
+      `http://localhost:${toInt(process.env.PORT, 4000)}/api/calendar/oauth/callback`,
+    calendarId: process.env.GOOGLE_CALENDAR_ID ?? 'primary',
+    timeZone: process.env.GOOGLE_DEFAULT_TIMEZONE ?? 'Asia/Karachi',
+    // Seals OAuth tokens at rest. Without it the integration reports itself unready
+    // rather than writing refresh tokens to disk in the clear.
+    encryptionKey: process.env.TOKEN_ENCRYPTION_KEY ?? '',
+    // Where the consent callback drops the browser back to. The first CORS origin.
+    frontendUrl: (process.env.CORS_ORIGIN ?? 'http://localhost:5173').split(',')[0].trim(),
+  },
 };
 
 config.cloudinary.configured = Boolean(
@@ -94,6 +108,19 @@ config.groq.configured = Boolean(config.groq.apiKey);
 
 /** Binance is used read-only, so both halves of the key pair are required. */
 config.binance.configured = Boolean(config.binance.apiKey && config.binance.apiSecret);
+
+/**
+ * The .env template ships placeholder text ("YOUR_..."), which is non-empty and would
+ * otherwise read as a working configuration right up until Google rejected it.
+ */
+const isPlaceholder = (value) => !value || value.startsWith('YOUR_');
+
+config.google.configured =
+  Boolean(config.google.clientId && config.google.clientSecret && config.google.redirectUri) &&
+  !isPlaceholder(config.google.clientId) &&
+  !isPlaceholder(config.google.clientSecret);
+
+config.google.tokensConfigured = Boolean(config.google.encryptionKey);
 
 if (config.env === 'production' && !process.env.JWT_SECRET) {
   throw new Error('JWT_SECRET must be set when NODE_ENV=production');
